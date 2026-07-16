@@ -54,6 +54,101 @@ def _bbox_iou(a: list[float], b: list[float]) -> float:
     return intersection / max(area_a + area_b - intersection, 1e-9)
 
 
+def _expanded_bbox(box: list[float], ratio: float = .18) -> list[float]:
+    width, height = box[2] - box[0], box[3] - box[1]
+    return [box[0] - width * ratio, box[1] - height * ratio, box[2] + width * ratio, box[3] + height * ratio]
+
+
+def _bbox_gap(a: list[float], b: list[float]) -> float:
+    horizontal = max(a[0] - b[2], b[0] - a[2], 0.0)
+    vertical = max(a[1] - b[3], b[1] - a[3], 0.0)
+    return math.hypot(horizontal, vertical)
+
+
+def _center(point: TrackPoint) -> tuple[float, float]:
+    box = point.bbox_json
+    return ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2)
+
+
+def _window_vector(points: list[TrackPoint], start: float, end: float) -> tuple[float, float] | None:
+    selected = [point for point in points if start <= point.timestamp_seconds <= end]
+    if len(selected) < 2:
+        return None
+    first, last = _center(selected[0]), _center(selected[-1])
+    return (last[0] - first[0], last[1] - first[1])
+
+
+def _magnitude(vector: tuple[float, float] | None) -> float:
+    return math.hypot(*vector) if vector else 0.0
+
+
+def collision_contact_metrics(
+    first: list[TrackPoint], second: list[TrackPoint],
+    polygon: list[tuple[float, float]] | None = None,
+) -> dict[str, Any] | None:
+    """Return evidence for a physical contact plus motion anomaly, or None.
+
+    This is deliberately conservative: nearby traffic is not enough. The pair must
+    approach one another, touch (or nearly touch), and then show a direction/speed
+    discontinuity or a track termination consistent with an impact.
+    """
+    a = {round(point.timestamp_seconds, 1): point for point in first}
+    b = {round(point.timestamp_seconds, 1): point for point in second}
+    candidates: list[tuple[float, float, float, float]] = []
+    for timestamp in a.keys() & b.keys():
+        if polygon and not (point_in_polygon((a[timestamp].x, a[timestamp].y), polygon) or point_in_polygon((b[timestamp].x, b[timestamp].y), polygon)):
+            continue
+        overlap = _bbox_iou(a[timestamp].bbox_json, b[timestamp].bbox_json)
+        expanded = _bbox_iou(_expanded_bbox(a[timestamp].bbox_json), _expanded_bbox(b[timestamp].bbox_json))
+        gap = _bbox_gap(a[timestamp].bbox_json, b[timestamp].bbox_json)
+        candidates.append((timestamp, overlap, expanded, gap))
+    if not candidates:
+        return None
+    # A collision can remain in contact for several frames. Evaluate the complete
+    # contact window instead of assuming the single largest overlap is the impact.
+    for timestamp, overlap, expanded, gap in sorted(
+        candidates, key=lambda item: item[1] * 2 + item[2] - item[3] * 4, reverse=True
+    ):
+        if overlap < .01 and expanded < .08 and gap > .018:
+            continue
+        current_distance = math.dist(_center(a[timestamp]), _center(b[timestamp]))
+        previous_times = [value for value in a.keys() & b.keys() if timestamp - 1.0 <= value <= timestamp - .35]
+        if not previous_times:
+            continue
+        previous_time = min(previous_times)
+        previous_distance = math.dist(_center(a[previous_time]), _center(b[previous_time]))
+        approach = previous_distance - current_distance
+        pre_a = _window_vector(first, timestamp - .9, timestamp - .1)
+        pre_b = _window_vector(second, timestamp - .9, timestamp - .1)
+        if approach < .025 or max(_magnitude(pre_a), _magnitude(pre_b)) < .035:
+            continue
+
+        post_a = _window_vector(first, timestamp + .1, timestamp + .9)
+        post_b = _window_vector(second, timestamp + .1, timestamp + .9)
+        direction_change = False
+        for before, after in ((pre_a, post_a), (pre_b, post_b)):
+            if _magnitude(before) > .02 and _magnitude(after) > .01:
+                cosine = (before[0] * after[0] + before[1] * after[1]) / (_magnitude(before) * _magnitude(after))
+                direction_change = direction_change or cosine < .55
+        speed_drop = any(
+            _magnitude(before) > .035 and _magnitude(after) < _magnitude(before) * .45
+            for before, after in ((pre_a, post_a), (pre_b, post_b))
+        )
+        termination = any(
+            timestamp - .1 <= points[-1].timestamp_seconds <= timestamp + .8
+            and points[-1].timestamp_seconds - points[0].timestamp_seconds >= .35
+            for points in (first, second)
+        )
+        if direction_change or speed_drop or termination:
+            return {
+                "timestamp": timestamp, "bounding_box_iou": overlap,
+                "expanded_iou": expanded, "bounding_box_gap": gap,
+                "approach_distance": approach, "direction_change": direction_change,
+                "speed_drop": speed_drop, "track_termination": termination,
+            }
+    return None
+
+
 def _crosses(points: list[TrackPoint], line: list[tuple[float, float]]) -> bool:
     if len(line) < 2:
         return False
@@ -92,14 +187,10 @@ def _add(
 
 
 def evaluate_configured_rules(db: Session, job: AnalysisJob) -> list[Incident]:
-    """Evaluate only rules whose camera geometry/calibration is explicitly available."""
+    """Evaluate enabled rules; geometry-dependent rules remain gated by configuration."""
     configuration_id = job.config_json.get("configuration_id")
-    if not configuration_id:
-        return []
-    configuration = db.get(CameraConfiguration, configuration_id)
-    if configuration is None:
-        return []
-    config = configuration.config_json or {}
+    configuration = db.get(CameraConfiguration, configuration_id) if configuration_id else None
+    config = configuration.config_json or {} if configuration else {}
     shapes = config.get("shapes", [])
     tracks = list(db.scalars(select(Track).where(Track.job_id == job.id)).all())
     histories = {track.id: _points(db, track.id) for track in tracks}
@@ -179,31 +270,26 @@ def evaluate_configured_rules(db: Session, job: AnalysisJob) -> list[Incident]:
             peak = max(congested, key=lambda item: item[1])
             created.append(_add(db, job, None, f"{peak[2]} congestion", peak[1], congested[0][0], peak[0], congested[-1][0], {"vehicle_count": peak[3], "region_capacity": capacity, "queue_duration_seconds": congested[-1][0] - congested[0][0], "classification": peak[2]}))
 
-    # Collision heuristic: strong overlap followed by both tracks becoming nearly stationary inside a road region.
-    if road_regions:
-        road_polygon = _shape_points(road_regions[0])
+    # Collision can be evaluated over the full frame. A configured road region narrows
+    # the search and reduces false positives, but is not required.
+    if "collision" in (job.modules_json or []):
+        road_polygon = _shape_points(road_regions[0]) if road_regions else None
         vehicle_tracks = [track for track in tracks if track.object_class in VEHICLES]
         for first, second in itertools.combinations(vehicle_tracks, 2):
-            a = {round(point.timestamp_seconds, 1): point for point in histories[first.id]}
-            b = {round(point.timestamp_seconds, 1): point for point in histories[second.id]}
-            overlaps = [(timestamp, _bbox_iou(a[timestamp].bbox_json, b[timestamp].bbox_json)) for timestamp in a.keys() & b.keys() if point_in_polygon((a[timestamp].x, a[timestamp].y), road_polygon)]
-            if not overlaps:
+            evidence = collision_contact_metrics(histories[first.id], histories[second.id], road_polygon)
+            if evidence is None:
                 continue
-            timestamp, overlap = max(overlaps, key=lambda item: item[1])
-            if overlap < float(road_regions[0].get("collision_iou", .3)):
-                continue
-            after_a = [point for point in histories[first.id] if point.timestamp_seconds >= timestamp]
-            after_b = [point for point in histories[second.id] if point.timestamp_seconds >= timestamp]
-            stopped_a = len(after_a) > 2 and math.dist((after_a[0].x, after_a[0].y), (after_a[-1].x, after_a[-1].y)) < .02
-            stopped_b = len(after_b) > 2 and math.dist((after_b[0].x, after_b[0].y), (after_b[-1].x, after_b[-1].y)) < .02
-            if stopped_a and stopped_b:
-                row = _add(db, job, first, "Possible collision", min(.9, .6 + overlap / 2), max(0, timestamp - 2), timestamp, timestamp + 4, {"bounding_box_iou": round(overlap, 3), "both_stationary_after": True}, "critical")
-                row.track_ids_json = [first.id, second.id]
-                created.append(row)
+            timestamp = float(evidence.pop("timestamp"))
+            confidence = min(.94, .66 + float(evidence["expanded_iou"]) * .5 + float(evidence["approach_distance"]))
+            measurements = {key: round(value, 3) if isinstance(value, float) else value for key, value in evidence.items()}
+            measurements["road_region_configured"] = bool(road_polygon)
+            row = _add(db, job, first, "Possible collision", confidence, max(0, timestamp - 1.2), timestamp, timestamp + 2.5, measurements, "critical")
+            row.track_ids_json = [first.id, second.id]
+            created.append(row)
 
     calibration = db.scalars(
         select(Calibration).where(Calibration.configuration_id == configuration.id).order_by(Calibration.calibrated_at.desc())
-    ).first()
+    ).first() if configuration else None
     if calibration and calibration.confidence >= .5:
         reference = calibration.reference_json or {}
         for track in tracks:

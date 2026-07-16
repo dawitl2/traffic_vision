@@ -1,4 +1,7 @@
+from types import SimpleNamespace
+
 from app.services.analysis_modules import CongestionModule, build_modules
+from app.services.evaluation import collision_contact_metrics
 from app.services.incidents import IncidentCandidate, suppress_duplicates
 
 
@@ -28,3 +31,31 @@ def test_duplicate_incidents_keep_stronger_candidate():
     assert len(result) == 2
     assert result[0].confidence == .91
 
+
+def _point(timestamp, x, y, width=.12, height=.1):
+    return SimpleNamespace(
+        timestamp_seconds=timestamp, x=x, y=y,
+        bbox_json=[x - width / 2, y - height / 2, x + width / 2, y + height / 2],
+    )
+
+
+def test_collision_requires_contact_approach_and_motion_anomaly():
+    first = [
+        _point(0, .20, .50), _point(.2, .26, .50), _point(.4, .32, .50),
+        _point(.6, .38, .50), _point(.8, .44, .50), _point(1.0, .50, .50),
+        _point(1.2, .50, .56), _point(1.4, .50, .62),
+    ]
+    second = [
+        _point(0, .80, .50), _point(.2, .75, .50), _point(.4, .70, .50),
+        _point(.6, .65, .50), _point(.8, .60, .50), _point(1.0, .54, .50),
+        _point(1.2, .54, .50), _point(1.4, .54, .50),
+    ]
+    evidence = collision_contact_metrics(first, second)
+    assert evidence is not None
+    assert evidence["direction_change"] or evidence["speed_drop"]
+
+
+def test_parallel_nearby_traffic_is_not_a_collision():
+    first = [_point(index / 5, .2 + index * .04, .45) for index in range(8)]
+    second = [_point(index / 5, .2 + index * .04, .60) for index in range(8)]
+    assert collision_contact_metrics(first, second) is None

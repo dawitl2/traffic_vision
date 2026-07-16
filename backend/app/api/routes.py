@@ -96,6 +96,7 @@ def health(db: Session = Depends(get_db)):
 def model_status():
     settings = get_settings()
     detector_file = settings.model_dir / Path(settings.yolo_model).name
+    accuracy_detector_file = settings.model_dir / "yolo11s.pt"
     cuda = False
     device_name = "CPU"
     try:
@@ -115,7 +116,11 @@ def model_status():
         "compute_device": device_name, "cuda_available": cuda,
         "onnx_providers": onnx_providers,
         "plate_execution_provider": "CPUExecutionProvider",
-        "detector": {"name": settings.yolo_model, "status": "ready" if detector_file.is_file() else "downloads on first real analysis if absent", "tracker": "ByteTrack"},
+        "detector": {
+            "name": f"{settings.yolo_model} / yolo11s.pt for GPU Accuracy",
+            "status": "ready" if detector_file.is_file() and accuracy_detector_file.is_file() else "a configured weight is missing",
+            "tracker": "ByteTrack",
+        },
         "plate": {
             "detector": "yolo-v9-t-384-license-plate-end2end", "ocr": "cct-xs-v2-global-model",
             "status": "ready when privacy acknowledgement and plate OCR are enabled",

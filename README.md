@@ -13,6 +13,8 @@ This is not an automatic police or ticketing system. The results are possible de
 - FastALPR and ONNX Runtime for plate detection and OCR
 - PyTorch with CUDA when an NVIDIA GPU is available
 
+The faster profiles use YOLO11n. GPU Accuracy uses YOLO11s, analyzes every frame and is the better choice for fast sideways vehicles or collision clips.
+
 SQLite is only a file inside the `data` folder. There is no cloud database, no deployment and no footage upload to an outside service. The frontend and backend only run on `127.0.0.1` by default.
 
 ## How it works
@@ -49,6 +51,13 @@ Start with short MP4 clips, around 20 seconds to 2 minutes, preferably 1080p and
 - [US DOT NGSIM data](https://data.transportation.gov/Automobiles/Next-Generation-Simulation-NGSIM-Vehicle-Trajector/8ect-6jqj) for traffic trajectories and supporting data
 
 For speed and license plates, recording your own authorized fixed-camera footage is usually better. You can make sure the plate is actually readable and measure a real road distance. Do not stand in the road or record somewhere you are not allowed to record.
+
+## Screenshots
+
+| Overview | Transactions |
+| :---: | :---: |
+| <img src="./screenshot-one.png" alt="" width="260" /> | <img src="./screenshot-two.png" alt="" width="260" /> |
+
 
 ## What footage need to check each part
 

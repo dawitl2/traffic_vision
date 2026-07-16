@@ -17,7 +17,7 @@ from ..database import SessionLocal
 from ..entities import AnalysisJob, CameraConfiguration, JobStatus, PlateRead, ProcessingLog, Track, TrackPoint, VideoSource
 from .plates import PlateCandidate, PlateProfile, vote_plate_candidates
 from .evaluation import evaluate_configured_rules
-from .evidence import create_incident_evidence
+from .evidence import create_incident_evidence, overlay_incident_alerts
 from .signal import build_signal_timeline, classify_signal_state
 
 
@@ -29,7 +29,7 @@ RELEVANT_CLASSES = VEHICLE_CLASSES | {"person", "dog", "cat", "horse", "sheep", 
 class PipelineRuntime:
     def __init__(self) -> None:
         self._threads: dict[str, threading.Thread] = {}
-        self._model: Any = None
+        self._models: dict[str, Any] = {}
         self._alpr: Any = None
         self._lock = threading.Lock()
         self._analysis_lock = threading.Lock()
@@ -45,14 +45,14 @@ class PipelineRuntime:
 
     def _load_detector(self, model_name: str):
         with self._lock:
-            if self._model is None:
+            if model_name not in self._models:
                 from ultralytics import YOLO
                 settings = get_settings()
                 model_path = Path(model_name)
                 if not model_path.is_absolute() and model_path.parent == Path("."):
                     model_path = settings.model_dir / model_path.name
-                self._model = YOLO(str(model_path))
-            return self._model
+                self._models[model_name] = YOLO(str(model_path))
+            return self._models[model_name]
 
     def _load_alpr(self):
         with self._lock:
@@ -131,7 +131,9 @@ class PipelineRuntime:
             job.active_module = "Loading object detector"
             db.commit()
             self._log(db, job_id, "Starting local analysis; no footage leaves this computer")
-            model = self._load_detector(settings.yolo_model)
+            requested_profile = str(job.config_json.get("performance_profile", settings.performance_profile))
+            detector_name = "yolo11s.pt" if requested_profile == "GPU Accuracy" else settings.yolo_model
+            model = self._load_detector(detector_name)
             if getattr(model, "predictor", None) is not None:
                 model.predictor = None
             enable_ocr = bool(job.config_json.get("enable_plate_ocr"))
@@ -175,7 +177,14 @@ class PipelineRuntime:
             frame_skip = max(1, int(job.config_json.get("frame_skip", settings.frame_skip)))
             inference_size = int(job.config_json.get("inference_size", settings.inference_size))
             confidence = float(job.config_json.get("detection_confidence", settings.detection_confidence))
-            requested_profile = str(job.config_json.get("performance_profile", settings.performance_profile))
+            enabled_modules = set(job.modules_json or [])
+            if requested_profile == "GPU Accuracy":
+                frame_skip = 1
+                inference_size = max(inference_size, 960)
+                confidence = min(confidence, .18)
+            elif "collision" in enabled_modules:
+                frame_skip = 1
+                confidence = min(confidence, .22)
             inference_device: str | int = "cpu"
             if requested_profile.startswith("GPU"):
                 try:
@@ -206,7 +215,7 @@ class PipelineRuntime:
                     timestamp = frame_index / fps
                 try:
                     results = model.track(
-                        frame, persist=True, tracker="bytetrack.yaml", conf=confidence, imgsz=inference_size,
+                        frame, persist=True, tracker="bytetrack.yaml", conf=confidence, iou=.45, imgsz=inference_size,
                         device=inference_device, verbose=False,
                     )
                 except RuntimeError as exc:
@@ -217,7 +226,7 @@ class PipelineRuntime:
                         self._log(db, job_id, "CUDA memory exhausted; continuing this job on CPU", "WARNING")
                         results = model.track(
                             frame, persist=True, tracker="bytetrack.yaml", conf=confidence,
-                            imgsz=min(inference_size, 640), device="cpu", verbose=False,
+                            iou=.45, imgsz=min(inference_size, 640), device="cpu", verbose=False,
                         )
                     else:
                         raise
@@ -315,6 +324,7 @@ class PipelineRuntime:
             if incidents:
                 job.active_module = "Incident evidence"
                 db.commit()
+                overlay_incident_alerts(db, str(output_path), incidents)
                 for incident in incidents:
                     create_incident_evidence(db, incident, video.file_path, str(output_path))
             job = db.get(AnalysisJob, job_id)

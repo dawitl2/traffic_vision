@@ -112,7 +112,7 @@ function VideoAnalysis() {
       return api<{id: string}>('/videos/upload', { method: 'POST', body })
     },
     onSuccess: async result => {
-      const job = await api<Job>(`/videos/${result.id}/analysis`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ modules: selected, configuration_id: configurationId || null, performance_profile: profile, frame_skip: profile === 'CPU Light' ? 3 : 2, inference_size: profile === 'GPU Accuracy' ? 960 : 640, enable_plate_ocr: plateOcr, privacy_acknowledged: privacy }) })
+      const job = await api<Job>(`/videos/${result.id}/analysis`, { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ modules: selected, configuration_id: configurationId || null, performance_profile: profile, frame_skip: profile === 'GPU Accuracy' ? 1 : profile === 'CPU Light' ? 3 : 2, inference_size: profile === 'GPU Accuracy' ? 960 : 640, detection_confidence: profile === 'GPU Accuracy' ? 0.18 : 0.35, enable_plate_ocr: plateOcr, privacy_acknowledged: privacy }) })
       setCurrentJob(job.id); client.invalidateQueries({queryKey:['videos']}); client.invalidateQueries({queryKey:['jobs']})
     },
   })

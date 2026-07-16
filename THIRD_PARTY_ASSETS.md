@@ -55,6 +55,7 @@ The configured weights were downloaded from their loaders' official registries o
 | Model | Provider/source | SHA-256 | License/status | Scenario |
 |---|---|---|---|---|
 | `yolo11n.pt` | Ultralytics official release assets | `0EBBC80D4A7680D14987A577CD21342B65ECFD94632BD9A8DA63AE6417644EE1` | AGPL-3.0 by default / Ultralytics terms | General object detection |
+| `yolo11s.pt` | Ultralytics official release assets | `85A76FE86DD8AFE384648546B56A7A78580C7CB7B404FC595F97969322D502D5` | AGPL-3.0 by default / Ultralytics terms | Higher-recall GPU Accuracy detection |
 | `yolo-v9-t-384-license-plate-end2end` | `open-image-models` registry | `888397B96D761C89DB40BC9C305838E8652660F5E282C2CADEBBE8D2951A77A8` | Repository MIT; verify weight/data terms before redistribution | Plate detection inside vehicle crops |
 | `cct-xs-v2-global-model` | `fast-plate-ocr` registry | `8031AFB5FDC6B4D80462C9D542F1284EBD2CFDDF5DBACD62609848D7E2855F44` | Repository/package MIT; verify weight/training-data terms before redistribution | Plate text recognition |
 
