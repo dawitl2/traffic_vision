@@ -54,7 +54,6 @@ For speed and license plates, recording your own authorized fixed-camera footage
 
 ## Screenshots
 
-| 1 | 2 |
 | :---: | :---: |
 | <img src="./screenshot-one.png" alt="" width="260" /> | <img src="./screenshot-two.png" alt="" width="260" /> |
 
